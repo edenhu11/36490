@@ -1,10 +1,10 @@
-full_corp = readRDS("congressall_corpus2.rds")
+full_corp = readRDS("/Users/znovack/Desktop/Git/36490Local/congressall_corpus2.rds")
 set.seed(36490)
 library(quanteda)
 library(sentimentr)
 library(tidyverse)
-taiwan_dict = read.table('TaiwanDictA.txt', stringsAsFactors = FALSE)
-china_dict = read.table('ChinaDictA.txt', stringsAsFactors = FALSE)
+taiwan_dict = read.table('/Users/znovack/Desktop/Git/36490Local/TaiwanDictA.txt', stringsAsFactors = FALSE)
+china_dict = read.table('/Users/znovack/Desktop/Git/36490Local/ChinaDictA.txt', stringsAsFactors = FALSE)
 garbo_words = c("senator", "will", "president", "yield", "gentleman", "bill", "vote", "amendment", "senate", "house", "unanimous", "may", "mr", "pass", "chairman", "time", "speaker", "states", "now", "one", "committee", "object", "support", "am", "pm", "proceed", "hearing", "revise", "subcommittee", "hearings", "consent", "unanim", "unanimity", "clerk", "order", "follow", "meet", "meeting", "move", "amend", "yielding", "further", "mon", "tue", "wed", "thu", "fri", "sat", "propose", "table", "year", "program", "provide", "can", "new", "legislation", "member", "go", "think")
 
 china_patt = paste(as.character(china_dict$V1), collapse = "(?:^|\\W)|(?:^|\\W)")
@@ -65,7 +65,7 @@ gen.rel.sentences = function(corp, wind, patt){
     # Window the sentences
     windowed_vect = window.truth(truth_vect, wind)
     sents[[1]] = tolower(sents[[1]])[windowed_vect]
-    wind_speech = paste(sents[[1]], collapse="")
+    wind_speech = paste(sents[[1]], collapse=" ")
     filt_words = strsplit(wind_speech, " ")[[1]]
     texts(corp)[i] = paste(filt_words[!(filt_words %in% full_stops)], sep = " ")
   }
