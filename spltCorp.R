@@ -67,7 +67,7 @@ gen.rel.sentences = function(corp, wind, patt){
     sents[[1]] = tolower(sents[[1]])[windowed_vect]
     wind_speech = paste(sents[[1]], collapse="")
     filt_words = strsplit(wind_speech, " ")[[1]]
-    texts(corp)[i] = paste(filt_words[!(filt_words %in% full_stops)], collapse = " ")
+    texts(corp)[i] = paste(filt_words[!(filt_words %in% full_stops)], sep = " ")
   }
   return (corp)
 }
