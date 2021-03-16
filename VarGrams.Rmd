@@ -1,0 +1,390 @@
+---
+title: "VarGrams"
+author: "Zachary Novack"
+date: "3/3/2021"
+output: html_document
+---
+
+# Init Variables
+```{r}
+set.seed(36490)
+library(quanteda)
+library(sentimentr)
+library(tidyverse)
+corpus = readRDS('samplePunc.rds')
+taiwan_dict = read.table('TaiwanDictA.txt', stringsAsFactors = FALSE)
+china_dict = read.table('ChinaDictA.txt', stringsAsFactors = FALSE)
+garbo_words = c("senator", "will", "president", "yield", "gentleman", "bill", "vote", "amendment", "senate", "house", "unanimous", "may", "mr", "pass", "chairman", "time", "speaker", "states", "now", "one", "committee", "object", "support", "am", "pm", "proceed", "hearing", "revise", "subcommittee", "hearings", "consent", "unanim", "unanimity", "clerk", "order", "follow", "meet", "meeting", "move", "amend", "yielding", "further", "mon", "tue", "wed", "thu", "fri", "sat", "propose", "table", "year", "program", "provide", "can", "new", "legislation", "member", "go", "think")
+
+china_patt = paste(as.character(china_dict$V1), collapse = "(?:^|\\W)|(?:^|\\W)")
+china_patt = paste('(?:^|\\W)', china_patt, '(?:^|\\W)', sep = '')
+taiwan_patt = paste(as.character(taiwan_dict$V1), collapse = "(?:^|\\W)|(?:^|\\W)")
+taiwan_patt = paste('(?:^|\\W)', taiwan_patt, '(?:^|\\W)', sep = '')
+
+```
+
+# Functions
+## Corpus Filtering
+```{r}
+parse.dfm.dict.corpus = function(in_dfm, in_corpus,...){
+  # Combine multiple dicts if supplied and name them
+  filter_dicts = lapply(list(...), unlist)
+  names(filter_dicts) = seq(1, length(filter_dicts))
+  
+  # COnvert dicts to formal dictionary type
+  dict = dictionary(filter_dicts)
+  
+  # Select Subset of dfm corresponding to dictionary
+  dfm_dict_mut = dfm_select(in_dfm, dict)
+  
+  # Find rows with at least one dictionary word
+  dfm_row_sum = apply(dfm_dict_mut, 1, sum)
+  
+  # Get corresponding speech ids
+  filt_speeches = docvars(dfm_dict_mut[dfm_row_sum > 0,])$speech_id
+  
+  # Return filtered corpus
+  return (corpus_subset(in_corpus, speech_id %in% filt_speeches))
+}
+```
+
+
+## Sentence Based Windowing
+```{r}
+window.truth = function(truth_vect, wind){
+  windowed_vect = rep(FALSE, length(truth_vect))
+  for (i in 1:length(windowed_vect)){
+    # Calculate window range to look at
+    window_range = max(i-wind, 1):min(i+wind, length(windowed_vect))
+    
+    # Apply OR function to window
+    windowed_vect[i] = reduce(truth_vect[window_range], function(x, y){x | y})
+  }
+  return(windowed_vect)
+}
+
+
+gen.sentence.sentiments = function(corp, wind, patt){
+  out_sent = rep(0.0, length(corp))
+  for (i in 1:length(corp)){
+    # Get sentences for current speech
+    sents = get_sentences(texts(corp)[i])
+    
+    # Find which sentences contain dictionary words
+    truth_vect = grepl(patt, tolower(sents[[1]]))
+    
+    # Window the sentences
+    windowed_vect = window.truth(truth_vect, wind)
+    sents[[1]] = sents[[1]][windowed_vect]
+    
+    
+    # Calculate average sentiment on windowed sentences
+    sent_table = sentiment_by(sents)
+    out_sent[i] = sent_table$ave_sentiment
+  }
+  return (out_sent)
+}
+
+gen.sentence.both = function(corp, wind, patt){
+  out_raw = rep(0.0, length(corp))
+  out_bin = rep(0.0, length(corp))
+  for (i in 1:length(corp)){
+    # Get sentences for current speech
+    sents = get_sentences(texts(corp)[i])
+    
+    # Find which sentences contain dictionary words
+    truth_vect = grepl(patt, tolower(sents[[1]]))
+    
+    # Window the sentences
+    windowed_vect = window.truth(truth_vect, wind)
+    sents[[1]] = sents[[1]][windowed_vect]
+    
+    
+    # Calculate average sentiment on windowed sentences
+    sent_raw = sentiment_by(sents)
+    out_raw[i] = sent_raw$ave_sentiment
+    
+    sent_bin = sentiment(sents)
+    polarity = sign(sum(sign(sent_bin$sentiment)))
+    out_bin[i] = polarity
+  }
+  return (list(out_raw, out_bin))
+}
+
+gen.sentence.binary = function(corp, wind, patt){
+  out_sent = rep(0.0, length(corp))
+  for (i in 1:length(corp)){
+    # Get sentences for current speech
+    sents = get_sentences(texts(corp)[i])
+    
+    # Find which sentences contain dictionary words
+    truth_vect = grepl(patt, tolower(sents[[1]]))
+    
+    # Window the sentences
+    windowed_vect = window.truth(truth_vect, wind)
+    sents[[1]] = sents[[1]][windowed_vect]
+    
+    # Calculate majority polarity for windowed sentences
+    sent_table = sentiment(sents)
+    polarity = sign(sum(sign(sent_table$sentiment)))
+    out_sent[i] = polarity
+  }
+  return (out_sent)
+}
+```
+
+
+## Word Based Windowing
+```{r}
+gen.word.both = function(corp, wind, dict){
+  out_raw = rep(0.0, length(corp))
+  out_bin = rep(0.0, length(corp))
+  for (i in 1:length(corp)){
+    # Get sentences for current speech
+    full_speech = gsub('[[:punct:] ]+',' ', texts(corp)[i]) %>% 
+      tolower() %>% 
+      str_split(" ") %>% 
+      unlist() %>% 
+      as.vector()
+    
+    # Find which sentences contain dictionary words
+    truth_vect = full_speech %in% as.character(dict$V1)
+    
+    # Window the word chunks
+    sents = window.truth(truth_vect, wind) %>% 
+      which() %>% 
+      split(cumsum(c(1, diff(.) != 1))) %>% 
+      lapply(function(x){paste(full_speech[x], collapse = ' ')}) %>% 
+      reduce(paste, sep = ". ") %>% 
+      get_sentences()
+    
+    # Calculate average sentiment on windowed sentences
+    sent_raw = sentiment_by(sents)
+    out_raw[i] = sent_raw$ave_sentiment
+    
+    sent_bin = sentiment(sents)
+    polarity = sign(sum(sign(sent_bin$sentiment)))
+    out_bin[i] = polarity
+  }
+  return (list(out_raw, out_bin))
+}
+
+gen.word.sentiments = function(corp, wind, dict){
+  out_sent = rep(0.0, length(corp))
+  for (i in 1:length(corp)){
+    # Get sentences for current speech
+    full_speech = gsub('[[:punct:] ]+',' ', texts(corp)[i]) %>% 
+      tolower() %>% 
+      str_split(" ") %>% 
+      unlist() %>% 
+      as.vector()
+    
+    # Find which sentences contain dictionary words
+    truth_vect = full_speech %in% as.character(dict$V1)
+    
+    # Window the word chunks
+    sents = window.truth(truth_vect, wind) %>% 
+      which() %>% 
+      split(cumsum(c(1, diff(.) != 1))) %>% 
+      lapply(function(x){paste(full_speech[x], collapse = ' ')}) %>% 
+      reduce(paste, sep = ". ") %>% 
+      get_sentences()
+    
+    # Calculate average sentiment on windowed sentences
+    sent_table = sentiment_by(sents)
+    out_sent[i] = sent_table$ave_sentiment
+  }
+  return (out_sent)
+}
+
+gen.word.binary = function(corp, wind, dict){
+  out_sent = rep(0.0, length(corp))
+  for (i in 1:length(corp)){
+    # Get sentences for current speech
+    full_speech = gsub('[[:punct:] ]+',' ', texts(corp)[i]) %>% 
+      tolower() %>% 
+      str_split(" ") %>% 
+      unlist() %>% 
+      as.vector()
+    
+    # Find which sentences contain dictionary words
+    truth_vect = full_speech %in% as.character(dict$V1)
+    
+    # Window the word chunks
+    sents = window.truth(truth_vect, wind) %>% 
+      which() %>% 
+      split(cumsum(c(1, diff(.) != 1))) %>% 
+      lapply(function(x){paste(full_speech[x], collapse = ' ')}) %>% 
+      reduce(paste, sep = ". ") %>% 
+      get_sentences()
+    
+    # Calculate majority polarity for windowed sentences
+    sent_table = sentiment(sents)
+    polarity = sign(sum(sign(sent_table$sentiment)))
+    out_sent[i] = polarity
+  }
+  return (out_sent)
+}
+```
+
+
+# Build Corpi
+```{r}
+dfm_samp = dfm(
+  corpus, remove = c(stopwords("english"), garbo_words), remove_punct = TRUE
+)
+china_corp = parse.dfm.dict.corpus(dfm_samp, corpus, china_dict)
+taiwan_corp = parse.dfm.dict.corpus(dfm_samp, corpus, taiwan_dict)
+asia_corp = parse.dfm.dict.corpus(dfm_samp, corpus, china_dict, taiwan_dict)
+```
+
+# Sentence based Windowing
+```{r}
+china_comp_df = data.frame(matrix(data = 0, nrow = 0, ncol = 3))
+colnames(china_comp_df) = c('index', 'window_size', 'value')
+china_bin_df = data.frame(matrix(data = 0, nrow = 0, ncol = 3))
+colnames(china_bin_df) = c('index', 'window_size', 'value')
+for (i in 0:3){
+  china_part_df = data.frame(matrix(data = 0, nrow = length(china_corp), ncol = 3))
+  colnames(china_part_df) = c('index', 'window_size', 'value')
+  china_pbin_df = data.frame(matrix(data = 0, nrow = length(china_corp), ncol = 3))
+  colnames(china_pbin_df) = c('index', 'window_size', 'value')
+  china_list = gen.sentence.both(china_corp, i, china_patt)
+  china_sents_sent = china_list[[1]]
+  
+  china_part_df$value = china_sents_sent
+  china_part_df$index = 1:length(china_sents_sent)
+  china_part_df$window_size = i
+  china_comp_df = rbind(china_comp_df, china_part_df)
+  
+  china_sents_bin = china_list[[2]]
+  china_pbin_df$value = china_sents_bin
+  china_pbin_df$index = 1:length(china_sents_bin)
+  china_pbin_df$window_size = i
+  china_bin_df = rbind(china_bin_df, china_pbin_df)
+}
+
+tai_comp_df = data.frame(matrix(data = 0, nrow = 0, ncol = 3))
+colnames(tai_comp_df) = c('index', 'window_size', 'value')
+tai_bin_df = data.frame(matrix(data = 0, nrow = 0, ncol = 3))
+colnames(tai_bin_df) = c('index', 'window_size', 'value')
+for (i in 0:3){
+  tai_part_df = data.frame(matrix(data = 0, nrow = length(taiwan_corp), ncol = 3))
+  colnames(tai_part_df) = c('index', 'window_size', 'value')
+  tai_pbin_df = data.frame(matrix(data = 0, nrow = length(taiwan_corp), ncol = 3))
+  colnames(tai_pbin_df) = c('index', 'window_size', 'value')
+  tai_list = gen.sentence.both(taiwan_corp, i, taiwan_patt)
+  tai_sents_sent = tai_list[[1]]
+  
+  tai_part_df$value = tai_sents_sent
+  tai_part_df$index = 1:length(tai_sents_sent)
+  tai_part_df$window_size = i
+  tai_comp_df = rbind(tai_comp_df, tai_part_df)
+  
+  tai_sents_bin = tai_list[[2]]
+  tai_pbin_df$value = tai_sents_bin
+  tai_pbin_df$index = 1:length(tai_sents_bin)
+  tai_pbin_df$window_size = i
+  tai_bin_df = rbind(tai_bin_df, tai_pbin_df)
+}
+```
+
+## China Raw Sentiment
+```{r}
+china_comp_df %>% 
+  ggplot(aes(x = value, fill = as.factor(.$window_size))) + geom_histogram() + labs(title = 'Sentence-Based Window Size on Raw Sentiment: China', x = 'Sentiment', fill = "Window Size")
+```
+
+## Taiwan Raw Sentiment
+```{r}
+tai_comp_df %>% 
+  ggplot(aes(x = value, fill = as.factor(.$window_size))) + geom_histogram() + labs(title = 'Sentence-Based Window Size on Raw Sentiment: Taiwan', x = 'Sentiment', fill = "Window Size")
+```
+
+## China Binary Sentiment
+```{r}
+china_bin_df %>%
+  ggplot(aes(fill = as.factor(window_size), x = value)) + geom_bar(position="dodge") + labs(title = 'Sentence-Based Window Size on Binary Sentiment: China', x = 'Sentiment', fill = "Window Size")
+```
+
+## Taiwan Binary Sentiment
+```{r}
+tai_bin_df %>%
+  ggplot(aes(fill = as.factor(window_size), x = value)) + geom_bar(position="dodge") + labs(title = 'Sentence-Based Window Size on Binary Sentiment: Taiwan', x = 'Sentiment', fill = "Window Size")
+```
+
+# Word based Windowing
+```{r}
+china_comp_df = data.frame(matrix(data = 0, nrow = 0, ncol = 3))
+colnames(china_comp_df) = c('index', 'window_size', 'value')
+china_bin_df = data.frame(matrix(data = 0, nrow = 0, ncol = 3))
+colnames(china_bin_df) = c('index', 'window_size', 'value')
+for (i in c(3, 7, 10, 15, 20, 25)){
+  china_part_df = data.frame(matrix(data = 0, nrow = length(china_corp), ncol = 3))
+  colnames(china_part_df) = c('index', 'window_size', 'value')
+  china_pbin_df = data.frame(matrix(data = 0, nrow = length(china_corp), ncol = 3))
+  colnames(china_pbin_df) = c('index', 'window_size', 'value')
+  china_list = gen.word.both(china_corp, i, china_dict)
+  china_sents_sent = china_list[[1]]
+  
+  china_part_df$value = china_sents_sent
+  china_part_df$index = 1:length(china_sents_sent)
+  china_part_df$window_size = i
+  china_comp_df = rbind(china_comp_df, china_part_df)
+  
+  china_sents_bin = china_list[[2]]
+  china_pbin_df$value = china_sents_bin
+  china_pbin_df$index = 1:length(china_sents_bin)
+  china_pbin_df$window_size = i
+  china_bin_df = rbind(china_bin_df, china_pbin_df)
+}
+
+tai_comp_df = data.frame(matrix(data = 0, nrow = 0, ncol = 3))
+colnames(tai_comp_df) = c('index', 'window_size', 'value')
+tai_bin_df = data.frame(matrix(data = 0, nrow = 0, ncol = 3))
+colnames(tai_bin_df) = c('index', 'window_size', 'value')
+for (i in c(3, 7, 10, 15, 20, 25)){
+  tai_part_df = data.frame(matrix(data = 0, nrow = length(taiwan_corp), ncol = 3))
+  colnames(tai_part_df) = c('index', 'window_size', 'value')
+  tai_pbin_df = data.frame(matrix(data = 0, nrow = length(taiwan_corp), ncol = 3))
+  colnames(tai_pbin_df) = c('index', 'window_size', 'value')
+  tai_list = gen.word.both(taiwan_corp, i, taiwan_dict)
+  tai_sents_sent = tai_list[[1]]
+  
+  tai_part_df$value = tai_sents_sent
+  tai_part_df$index = 1:length(tai_sents_sent)
+  tai_part_df$window_size = i
+  tai_comp_df = rbind(tai_comp_df, tai_part_df)
+  
+  tai_sents_bin = tai_list[[2]]
+  tai_pbin_df$value = tai_sents_bin
+  tai_pbin_df$index = 1:length(tai_sents_bin)
+  tai_pbin_df$window_size = i
+  tai_bin_df = rbind(tai_bin_df, tai_pbin_df)
+}
+```
+
+## China Raw Sentiment
+```{r}
+china_comp_df %>% 
+  ggplot(aes(x = value, fill = as.factor(.$window_size))) + geom_histogram() + labs(title = 'Word-Based Window Size on Raw Sentiment: China', x = 'Sentiment', fill = "Window Size")
+```
+
+## Taiwan Raw Sentiment
+```{r}
+tai_comp_df %>% 
+  ggplot(aes(x = value, fill = as.factor(.$window_size))) + geom_histogram() + labs(title = 'Word-Based Window Size on Raw Sentiment: Taiwan', x = 'Sentiment', fill = "Window Size")
+```
+
+## China Binary Sentiment
+```{r}
+china_bin_df %>%
+  ggplot(aes(fill = as.factor(window_size), x = value)) + geom_bar(position="dodge") + labs(title = 'Word-Based Window Size on Binary Sentiment: China', x = 'Sentiment', fill = "Window Size")
+```
+
+## Taiwan Binary Sentiment
+```{r}
+tai_bin_df %>%
+  ggplot(aes(fill = as.factor(window_size), x = value)) + geom_bar(position="dodge") + labs(title = 'Word-Based Window Size on Binary Sentiment: Taiwan', x = 'Sentiment', fill = "Window Size")
+```
+
